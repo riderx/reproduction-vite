@@ -11,6 +11,8 @@ export interface Env {
 // Track initialized sandboxes and their logs
 const initialized = new Set<string>();
 const processLogs: string[] = [];
+let viteReadyPromise: Promise<void> | null = null;
+let viteReadyResolve: (() => void) | null = null;
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -53,6 +55,11 @@ export default {
           console.log({
             message: "INITIALIZING sandbox for first time",
             event: "init:start"
+          });
+
+          // Create promise to track when Vite is ready
+          viteReadyPromise = new Promise((resolve) => {
+            viteReadyResolve = resolve;
           });
 
           // Create a simple Vite dev server with WebSocket support
@@ -138,6 +145,20 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
                     event: "vite:log",
                     log: logLine
                   });
+
+                  // Check if Vite is ready by looking for specific log patterns
+                  if (viteReadyResolve && !initialized.has('vite-echo-server')) {
+                    // Vite prints "Local: http://..." or "ready in" when server is up
+                    if (logLine.includes('Local:') || logLine.includes('ready in') || logLine.includes('localhost:3333')) {
+                      console.log({
+                        message: "VITE_READY: Detected Vite ready signal in logs",
+                        event: "vite:ready",
+                        logLine
+                      });
+                      viteReadyResolve();
+                      viteReadyResolve = null;
+                    }
+                  }
                 }
               }
             } catch (error) {
@@ -151,44 +172,18 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
 
           ctx.waitUntil(logStreamPromise);
 
-          // Wait for Vite to be ready (look for "Local:" in logs)
-          console.log({ message: "INIT: Waiting for Vite ready signal", event: "init:wait:start" });
-          let viteReady = false;
-          for (let i = 0; i < 60; i++) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            try {
-              const processes = await sandbox.listProcesses();
-              const viteProc = processes.find(p => p.id === process.id);
-              if (viteProc) {
-                console.log({
-                  message: "INIT: Vite process still running",
-                  event: "init:wait:check",
-                  attempt: i + 1,
-                  processId: viteProc.id
-                });
-                // Assume ready after a few seconds
-                if (i >= 5) {
-                  viteReady = true;
-                  console.log({
-                    message: "INIT: Assuming Vite is ready",
-                    event: "init:wait:ready",
-                    attempt: i + 1
-                  });
-                  break;
-                }
-              }
-            } catch (error) {
-              console.error({
-                message: "INIT: Error checking process",
-                event: "init:wait:error",
-                error: String(error)
-              });
-            }
-          }
+          // Wait for Vite to be ready (detected from logs)
+          console.log({ message: "INIT: Waiting for Vite ready signal from logs", event: "init:wait:start" });
 
-          if (!viteReady) {
-            console.warn({ message: "INIT: Timeout waiting for Vite", event: "init:wait:timeout" });
-          }
+          const timeout = new Promise<void>((resolve) => {
+            setTimeout(() => {
+              console.warn({ message: "INIT: Timeout waiting for Vite (30s)", event: "init:wait:timeout" });
+              resolve();
+            }, 30000); // 30 second timeout
+          });
+
+          // Wait for either Vite ready signal or timeout
+          await Promise.race([viteReadyPromise, timeout]);
 
           initialized.add('vite-echo-server');
           console.log({ message: "INIT: Complete", event: "init:complete" });
