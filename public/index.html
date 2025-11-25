@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vite Sandbox Reproduction</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .header {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 15px 20px;
+      border-bottom: 1px solid #333;
+    }
+    h1 {
+      margin: 0;
+      font-size: 1.2rem;
+      font-weight: 500;
+    }
+    #status {
+      margin-top: 8px;
+      padding: 8px 12px;
+      background: #2d2d2d;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      font-family: monospace;
+    }
+    .container {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .left-panel {
+      width: 40%;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #333;
+      background: #1e1e1e;
+    }
+    .logs-header {
+      padding: 10px 15px;
+      background: #252526;
+      color: #d4d4d4;
+      font-size: 0.9rem;
+      font-weight: 600;
+      border-bottom: 1px solid #333;
+    }
+    #logs {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px;
+      background: #1e1e1e;
+      color: #d4d4d4;
+      font-size: 0.85rem;
+      line-height: 1.5;
+    }
+    .log-entry {
+      margin: 2px 0;
+      padding: 2px 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .log-entry.error {
+      color: #f48771;
+    }
+    .log-entry.warn {
+      color: #dcdcaa;
+    }
+    .log-entry.info {
+      color: #4ec9b0;
+    }
+    #preview-frame {
+      width: 60%;
+      height: 100%;
+      border: none;
+    }
+    ::-webkit-scrollbar {
+      width: 10px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #1e1e1e;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #424242;
+      border-radius: 5px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #4e4e4e;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>Vite Sandbox Preview</h1>
+    <div id="status">⏳ Initializing...</div>
+  </div>
+
+  <div class="container">
+    <div class="left-panel">
+      <div class="logs-header">📋 Vite Server Logs</div>
+      <div id="logs"></div>
+    </div>
+    <iframe id="preview-frame"></iframe>
+  </div>
+
+  <script>
+    const statusDiv = document.getElementById('status');
+    const iframe = document.getElementById('preview-frame');
+    const logsDiv = document.getElementById('logs');
+
+    function addLog(message, type = 'info') {
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = message;
+      logsDiv.appendChild(entry);
+      logsDiv.scrollTop = logsDiv.scrollHeight;
+    }
+
+    async function streamLogs() {
+      try {
+        const response = await fetch('/logs-stream');
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              if (data === '[DONE]') continue;
+
+              try {
+                const logData = JSON.parse(data);
+                const logType = logData.event?.includes('error') ? 'error' :
+                               logData.event?.includes('warn') ? 'warn' : 'info';
+                addLog(logData.log || JSON.stringify(logData), logType);
+              } catch {
+                addLog(data);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        addLog(`Log stream error: ${error.message}`, 'error');
+      }
+    }
+
+    async function init() {
+      statusDiv.textContent = '⏳ Fetching preview URL...';
+      addLog('Initializing Vite sandbox...');
+
+      try {
+        const response = await fetch('/ws-url');
+        const data = await response.json();
+
+        if (data.error) {
+          throw new Error(data.error);
+        }
+
+        console.log('Response:', data);
+        statusDiv.textContent = `✅ Preview: ${data.previewUrl} | WebSocket: ${data.url}`;
+        addLog(`Preview URL: ${data.previewUrl}`);
+        addLog(`WebSocket URL: ${data.url}`);
+
+        iframe.src = data.previewUrl;
+        addLog('Loading preview in iframe...');
+
+        // Start streaming logs
+        streamLogs();
+      } catch (error) {
+        console.error('Error:', error);
+        statusDiv.textContent = `❌ Error: ${error.message}`;
+        addLog(`Error: ${error.message}`, 'error');
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>
