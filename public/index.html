@@ -134,13 +134,15 @@
       logsDiv.scrollTop = logsDiv.scrollHeight;
     }
 
+    const SANDBOX_ID = 'vite-hmr-' + Date.now();  // Fresh container each reload (for testing)
+
     async function testHMR() {
       clickCount++;
       testBtn.textContent = `Test HMR (Click Count: ${clickCount})`;
       addLog(`Testing HMR... updating main.js with count: ${clickCount}`, 'info');
 
       try {
-        const response = await fetch('/test-hmr', {
+        const response = await fetch(`/sandbox/${SANDBOX_ID}/test-hmr`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ count: clickCount })
@@ -168,7 +170,7 @@
 
     async function streamLogs() {
       try {
-        const response = await fetch('/logs-stream');
+        const response = await fetch(`/sandbox/${SANDBOX_ID}/logs-stream`);
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
@@ -204,10 +206,10 @@
 
     async function init() {
       statusDiv.textContent = '⏳ Fetching preview URL...';
-      addLog('Initializing Vite sandbox...');
+      addLog(`Initializing Vite sandbox (ID: ${SANDBOX_ID})...`);
 
       try {
-        const response = await fetch('/ws-url');
+        const response = await fetch(`/sandbox/${SANDBOX_ID}/ws-url`);
         const data = await response.json();
 
         if (data.error) {
@@ -215,9 +217,8 @@
         }
 
         console.log('Response:', data);
-        statusDiv.textContent = `✅ Preview: ${data.previewUrl} | WebSocket: ${data.url}`;
+        statusDiv.textContent = `✅ Sandbox: ${data.sandboxId} | Preview: ${data.previewUrl}`;
         addLog(`Preview URL: ${data.previewUrl}`);
-        addLog(`WebSocket URL: ${data.url}`);
 
         iframe.src = data.previewUrl;
         addLog('Loading preview in iframe...');

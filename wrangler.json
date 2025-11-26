@@ -5,10 +5,18 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
   "routes": [
     {
-      "pattern": "reproduction.appmi.store",
-      "custom_domain": true
+      "pattern": "appmi.store/*",
+      "zone_name": "appmi.store"
+    },
+    {
+      "pattern": "*.appmi.store/*",
+      "zone_name": "appmi.store"
     }
   ],
   "assets": {

@@ -34,48 +34,71 @@ export default {
         status: proxyResponse.status
       });
       return proxyResponse;
+    } else {
+      console.log({
+        message: "proxyToSandbox returned null - not a preview URL",
+        event: "proxy:skip",
+        url: request.url
+      });
     }
 
     const url = new URL(request.url);
     const { hostname } = url;
 
-    // Route: GET /ws-url - Return WebSocket URL for client to connect
-    if (url.pathname === '/ws-url') {
+    // Route: GET /sandbox/:sandboxId/ws-url - Return WebSocket URL for client to connect
+    const wsUrlMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/ws-url$/);
+    if (wsUrlMatch) {
+      const sandboxId = wsUrlMatch[1];
+
       console.log({
         message: "WS_URL endpoint called",
         event: "wsurl:request",
-        hostname
+        sandboxId
       });
 
-      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
+      const sandbox = getSandbox(env.Sandbox, sandboxId, { normalizeId: true });
 
       try {
-        // Check if Vite process is already running in the Durable Object
-        let needsInit = !initialized.has('vite-echo-server');
+        // ALWAYS check processes - don't rely on in-memory state
+        const processes = await sandbox.listProcesses();
+        const viteProcess = processes.find(p => p.command?.includes('vite') || p.command?.includes('bun run dev'));
 
-        if (needsInit) {
-          // Double-check: list processes to see if Vite is already running
-          const processes = await sandbox.listProcesses();
-          const viteProcess = processes.find(p => p.command?.includes('vite') || p.command?.includes('bun run dev'));
+        let needsInit = !viteProcess;
 
-          if (viteProcess) {
-            console.log({
-              message: "INIT: Vite already running from previous session",
-              event: "init:skip",
-              processId: viteProcess.id,
-              command: viteProcess.command
-            });
-            needsInit = false;
-            initialized.add('vite-echo-server');
-          }
+        if (viteProcess) {
+          console.log({
+            message: "INIT: Vite already running, skipping init",
+            event: "init:skip",
+            processId: viteProcess.id,
+            command: viteProcess.command
+          });
+          initialized.add(sandboxId);
         }
 
         // Initialize Vite server only if needed
         if (needsInit) {
           console.log({
-            message: "INITIALIZING sandbox for first time",
+            message: "INITIALIZING sandbox - checking for old processes",
             event: "init:start"
           });
+
+          // Kill any existing processes (from previous sessions/tests)
+          for (const process of processes) {
+            console.log({
+              message: "INIT: Killing old process",
+              event: "init:kill",
+              processId: process.id,
+              command: process.command
+            });
+            try {
+              await sandbox.killProcess(process.id);
+            } catch (error) {
+              console.warn({
+                message: "INIT: Failed to kill process (might already be dead)",
+                error: String(error)
+              });
+            }
+          }
 
           // Create promise to track when Vite is ready
           viteReadyPromise = new Promise((resolve) => {
@@ -105,6 +128,20 @@ export default {
 <html>
 <head>
   <title>Vite WS Test</title>
+  <script>
+    // Debug: Log all WebSocket connection attempts
+    const OriginalWebSocket = window.WebSocket;
+    window.WebSocket = function(url, protocols) {
+      console.log('[WS DEBUG] Attempting WebSocket connection to:', url);
+      console.log('[WS DEBUG] Current page URL:', window.location.href);
+      return new OriginalWebSocket(url, protocols);
+    };
+    window.WebSocket.prototype = OriginalWebSocket.prototype;
+    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
+    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
+    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
+    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
+  </script>
 </head>
 <body>
   <h1>Hello from Vite in Cloudflare Sandbox!</h1>
@@ -115,6 +152,31 @@ export default {
   <script type="module" src="/main.js"></script>
 </body>
 </html>`
+          );
+
+          console.log({ message: "INIT: Creating vite.config.js", event: "init:vite-config" });
+          await sandbox.writeFile(
+            '/workspace/vite.config.js',
+            `export default {
+  base: '/sandbox/${sandboxId}/preview/',
+  server: {
+    host: '0.0.0.0',
+    port: 3333,
+    strictPort: true,
+    allowedHosts: [
+      'localhost',
+      '.localhost',
+      'container',      // Allow containerFetch requests
+      'appmi.store',    // Production domain
+      '.appmi.store'    // Production wildcard subdomains
+    ],
+    hmr: {
+      // Let Vite auto-detect the WebSocket URL from window.location
+      // This will work on any port (8787, 5151, etc.)
+      protocol: 'ws'
+    }
+  }
+}`
           );
 
           console.log({ message: "INIT: Creating main.js", event: "init:js" });
@@ -165,7 +227,7 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
                   });
 
                   // Check if Vite is ready by looking for specific log patterns
-                  if (viteReadyResolve && !initialized.has('vite-echo-server')) {
+                  if (viteReadyResolve && !initialized.has(sandboxId)) {
                     // Vite prints "Local: http://..." or "ready in" when server is up
                     if (logLine.includes('Local:') || logLine.includes('ready in') || logLine.includes('localhost:3333')) {
                       console.log({
@@ -203,75 +265,24 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
           // Wait for either Vite ready signal or timeout
           await Promise.race([viteReadyPromise, timeout]);
 
-          initialized.add('vite-echo-server');
+          initialized.add(sandboxId);
           console.log({ message: "INIT: Complete", event: "init:complete" });
         }
 
-        // Expose port and get preview URL (check if already exposed first)
-        console.log({ message: "EXPOSE: Getting or exposing port 3333", event: "expose:start", hostname });
-
-        let exposedAt: string;
-
-        // Check if port is already exposed
-        if (typeof sandbox.getExposedPorts === 'function') {
-          try {
-            const exposedPorts = await sandbox.getExposedPorts(hostname);
-            const existing = exposedPorts.find((p: any) => p.port === 3333);
-
-            if (existing) {
-              exposedAt = existing.url || (existing as any).exposedAt;
-              console.log({
-                message: "EXPOSE: Port already exposed, reusing",
-                event: "expose:reuse",
-                exposedAt
-              });
-            } else {
-              const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
-              exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
-              console.log({
-                message: "EXPOSE: Port newly exposed",
-                event: "expose:new",
-                exposedAt
-              });
-            }
-          } catch (error) {
-            // Fallback if getExposedPorts fails
-            console.warn({ message: "EXPOSE: getExposedPorts failed, trying exposePort", error: String(error) });
-            const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
-            exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
-          }
-        } else {
-          // Fallback if getExposedPorts doesn't exist
-          const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
-          exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
-        }
-
-        console.log({
-          message: "EXPOSE: Final preview URL",
-          event: "expose:success",
-          exposedAt
-        });
-
-        // Convert https to wss for WebSocket
-        const wsUrl = exposedAt.replace('https://', 'wss://').replace('http://', 'ws://');
-
-        // In local dev, the exposedAt URL (e.g., http://3333-vite-echo-server-xxx.localhost/)
-        // won't work directly in browsers. Instead, use the /direct route which proxies through the worker.
-        const proxiedPreviewUrl = new URL('/direct', url.origin).toString();
+        // For local dev, return /sandbox/:sandboxId/preview/ URL (with trailing slash for Vite base)
+        // In production with custom domain, would expose port and return preview URL
+        const previewUrl = new URL(`/sandbox/${sandboxId}/preview/`, url.origin).toString();
 
         console.log({
           message: "WS_URL: Returning to client",
           event: "wsurl:response",
-          rawExposedAt: exposedAt,
-          proxiedPreviewUrl,
-          wsUrl
+          previewUrl,
+          sandboxId
         });
 
         return Response.json({
-          url: wsUrl,
-          previewUrl: proxiedPreviewUrl, // Return proxied URL instead of raw exposedAt
-          rawPreviewUrl: exposedAt, // Include raw URL for debugging
-          message: 'Connect to this WebSocket URL for Vite HMR'
+          previewUrl,  // http://localhost:5151/sandbox/{sandboxId}/preview
+          sandboxId
         });
       } catch (error) {
         console.error({
@@ -292,11 +303,13 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
       return env.ASSETS.fetch(request);
     }
 
-    // Route: POST /test-hmr - Update main.js to test HMR
-    if (url.pathname === '/test-hmr' && request.method === 'POST') {
-      console.log({ message: "TEST_HMR: Updating main.js", event: "test:hmr:start" });
+    // Route: POST /sandbox/:sandboxId/test-hmr - Update main.js to test HMR
+    const testHmrMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/test-hmr$/);
+    if (testHmrMatch && request.method === 'POST') {
+      const sandboxId = testHmrMatch[1];
+      console.log({ message: "TEST_HMR: Updating main.js", event: "test:hmr:start", sandboxId });
 
-      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
+      const sandbox = getSandbox(env.Sandbox, sandboxId, { normalizeId: true });
 
       try {
         const body = await request.json() as { count: number };
@@ -331,9 +344,11 @@ if (app) {
       }
     }
 
-    // Route: GET /logs-stream - Stream Vite server logs via SSE
-    if (url.pathname === '/logs-stream') {
-      console.log({ message: "LOGS_STREAM: Starting SSE stream", event: "logs:stream:start" });
+    // Route: GET /sandbox/:sandboxId/logs-stream - Stream Vite server logs via SSE
+    const logsMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/logs-stream$/);
+    if (logsMatch) {
+      const sandboxId = logsMatch[1];
+      console.log({ message: "LOGS_STREAM: Starting SSE stream", event: "logs:stream:start", sandboxId });
 
       const encoder = new TextEncoder();
       let lastLogIndex = 0;
@@ -385,65 +400,48 @@ if (app) {
       });
     }
 
-    // Route: GET /direct - Proxy requests to Vite preview
-    if (url.pathname.startsWith('/direct')) {
-      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
-      const { hostname } = url;
+    // Route: /sandbox/:sandboxId/preview/* - Proxy to sandbox Vite server
+    // This is the local dev pattern - routes directly to container without exposing ports
+    const previewMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/preview(.*)$/);
+    if (previewMatch) {
+      const sandboxId = previewMatch[1];
+      const subPath = previewMatch[2] || '/';
+
+      const sandbox = getSandbox(env.Sandbox, sandboxId, { normalizeId: true });
+
+      const isWebSocket = request.headers.get('upgrade')?.toLowerCase() === 'websocket';
+
+      console.log({
+        message: "PREVIEW: Proxying request to sandbox",
+        event: "preview:proxy",
+        sandboxId,
+        subPath,
+        isWebSocket,
+        upgradeHeader: request.headers.get('upgrade'),
+        connectionHeader: request.headers.get('connection')
+      });
 
       try {
-        // Ensure port is exposed
-        if (typeof sandbox.getExposedPorts === 'function') {
-          const exposedPorts = await sandbox.getExposedPorts(hostname);
-          const existing = exposedPorts.find((p: any) => p.port === 3333);
-
-          if (!existing) {
-            await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
-            console.log({ message: "DIRECT: Port exposed", event: "direct:expose" });
-          }
-        }
-
-        // Create a synthetic request to the .localhost URL for proxyToSandbox to handle
-        const exposedPorts = await sandbox.getExposedPorts(hostname);
-        const exposedPort = exposedPorts.find((p: any) => p.port === 3333);
-
-        if (!exposedPort) {
-          return new Response('Port not exposed', { status: 500 });
-        }
-
-        const previewUrl = exposedPort.url || (exposedPort as any).exposedAt;
-
-        // Create a new request with the .localhost URL
-        const proxyUrl = new URL(previewUrl);
-        proxyUrl.pathname = url.pathname.replace('/direct', '') || '/';
-        proxyUrl.search = url.search;
-
-        const proxyRequest = new Request(proxyUrl.toString(), {
-          method: request.method,
-          headers: request.headers,
-          body: request.body,
-        });
+        // Pass the original request to containerFetch with port 3333
+        // containerFetch will handle routing to the container's Vite server (including WebSocket upgrades)
+        const response = await sandbox.containerFetch(request, 3333);
 
         console.log({
-          message: "DIRECT: Proxying request",
-          event: "direct:proxy",
-          originalUrl: url.toString(),
-          proxyUrl: proxyUrl.toString()
+          message: "PREVIEW: Response from container",
+          event: "preview:response",
+          status: response.status,
+          isWebSocket,
+          upgradeResponse: response.headers.get('upgrade')
         });
 
-        // Let proxyToSandbox handle the actual proxying
-        const proxyResponse = await proxyToSandbox(proxyRequest, env);
-
-        if (proxyResponse) {
-          return proxyResponse;
-        }
-
-        return new Response('Proxy failed', { status: 500 });
+        return response;
       } catch (error) {
-        console.error({ message: "DIRECT: Error", error: String(error) });
+        console.error({ message: "PREVIEW: Error", error: String(error) });
         return Response.json({ error: String(error) }, { status: 500 });
       }
     }
 
+    // All other routes - 404
     return new Response('Not found', { status: 404 });
   }
 };
