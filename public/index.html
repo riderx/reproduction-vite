@@ -218,7 +218,7 @@
       addLog(`Initializing Vite sandbox (ID: ${SANDBOX_ID})...`);
 
       try {
-        const response = await fetch(`/sandbox/${SANDBOX_ID}/ws-url`);
+        const response = await fetch(`/sandbox/${SANDBOX_ID}/init`);
         const data = await response.json();
 
         if (data.error) {

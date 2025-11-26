@@ -19,21 +19,17 @@ This project demonstrates Vite Hot Module Replacement (HMR) integration with Clo
 6. **Server-Sent Events**: Real-time log streaming from Vite server
 7. **No External Dependencies**: All routing through worker, no `lvh.me` or external DNS required
 
-## Known Limitations ⚠️
+## Implementation Notes
 
-### WebSocket HMR in Local Development
+### Log-Based Auto-Reload
 
-**Status**: WebSocket connections fail in local development with `wrangler dev`
+Instead of using Vite's WebSocket-based HMR, this project uses a log-based auto-reload approach:
 
-**Symptoms**:
-- Browser attempts WebSocket connection: `ws://localhost:8787/sandbox/{id}/preview/?token=...`
-- Connection fails with "bad response from server"
-- No worker log entry appears for WebSocket requests
-- Vite logs show `[vite] page reload main.js` but browser doesn't auto-reload
-
-**Root Cause**: `wrangler dev` does not pass WebSocket upgrade requests to the worker's fetch handler. The WebSocket connection attempt never reaches the worker code, so `containerFetch()` is never called for the upgrade request.
-
-**Expected Behavior in Production**: WebSocket HMR should work when deployed to production with a real domain, as documented in the Cloudflare Sandbox SDK.
+1. Vite HMR is disabled via `server.hmr: false` in the config
+2. Client connects to `/sandbox/:sandboxId/logs-stream` via Server-Sent Events (SSE)
+3. When Vite detects file changes, it logs `[vite] page reload`
+4. Client watches the log stream and triggers `iframe.contentWindow.location.reload()` automatically
+5. This provides automatic updates without WebSocket complexity
 
 ## Project Structure
 
@@ -58,7 +54,7 @@ Static HTML page with split-screen interface:
 - Right: Vite preview iframe
 - Controls: "Test HMR" button and manual reload
 
-### `/sandbox/:sandboxId/ws-url`
+### `/sandbox/:sandboxId/init`
 Initialize sandbox and return preview URL:
 ```json
 {
@@ -70,8 +66,8 @@ Initialize sandbox and return preview URL:
 ### `/sandbox/:sandboxId/preview/*`
 Proxy all requests to Vite server inside container:
 - HTTP requests → `containerFetch(request, 3333)`
-- WebSocket upgrades → Handled by `containerFetch()` (works in production)
 - Vite base path configured to match route
+- HMR disabled - uses log-based auto-reload instead
 
 ### `/sandbox/:sandboxId/logs-stream`
 Server-Sent Events stream of Vite server output
@@ -104,10 +100,8 @@ Each sandbox initializes with:
        host: '0.0.0.0',
        port: 3333,
        strictPort: true,
-       allowedHosts: ['localhost', '.localhost', 'container'],
-       hmr: {
-         protocol: 'ws'  // Auto-detects host/port from window.location
-       }
+       allowedHosts: ['localhost', '.localhost', 'container', 'appmi.store', '.appmi.store'],
+       hmr: false  // Disabled - uses log-based auto-reload instead
      }
    }
    ```
@@ -134,10 +128,10 @@ Opens [http://localhost:8787](http://localhost:8787)
 ### Test HMR Flow
 
 1. Click "Test HMR" button
-2. Worker creates/updates [/workspace/src/main.js](/workspace/src/main.js) with incremented counter
+2. Worker creates/updates [/workspace/main.js](/workspace/main.js) with incremented counter
 3. Vite detects change and logs `[vite] page reload main.js`
-4. **In production**: Browser WebSocket receives update and auto-reloads
-5. **In local dev**: Click "Reload Preview" button to see changes
+4. Client watches log stream and auto-reloads iframe when reload message detected
+5. Changes appear automatically without manual refresh
 
 ## Key Implementation Details
 
@@ -179,12 +173,12 @@ npm run deploy
 
 Builds Vite assets and deploys worker with Durable Objects.
 
-## Expected Production Behavior
+## Production Deployment
 
-When deployed to production:
-- WebSocket upgrade requests should reach the worker's fetch handler
-- `containerFetch()` will handle WebSocket upgrade to container
-- Vite HMR should work automatically without manual reload
+When deployed to production (appmi.store):
+- All HTTP requests are proxied via `containerFetch(request, 3333)`
+- Log-based auto-reload works the same as in local development
+- No WebSocket connections required
 - All routes work through the worker without direct container access
 
 ## Dependencies
@@ -204,7 +198,4 @@ Fixed by checking `getExposedPorts()` before calling `exposePort()` and reusing 
 Occurs when connecting to wrong port. Ensure `containerFetch(request, 3333)` specifies port 3333.
 
 ### "Blocked request. This host is not allowed"
-Fixed by adding `"container"` to `allowedHosts` in sandbox's Vite config.
-
-### WebSocket connection fails in local dev
-Known limitation of `wrangler dev` - WebSocket upgrade requests don't reach worker. Expected to work in production deployment
+Fixed by adding production domains (`"appmi.store"`, `".appmi.store"`) to `allowedHosts` in sandbox's Vite config.

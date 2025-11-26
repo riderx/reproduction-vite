@@ -8,8 +8,7 @@ export interface Env {
   ASSETS: Fetcher;
 }
 
-// Track initialized sandboxes and their logs
-const initialized = new Set<string>();
+// Track process logs for streaming
 const processLogs: string[] = [];
 let viteReadyPromise: Promise<void> | null = null;
 let viteReadyResolve: (() => void) | null = null;
@@ -43,47 +42,31 @@ export default {
     }
 
     const url = new URL(request.url);
-    const { hostname } = url;
 
-    // Route: GET /sandbox/:sandboxId/ws-url - Return WebSocket URL for client to connect
-    const wsUrlMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/ws-url$/);
-    if (wsUrlMatch) {
-      const sandboxId = wsUrlMatch[1];
+    // Route: GET /sandbox/:sandboxId/init - Initialize sandbox and return preview URL
+    const initMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/init$/);
+    if (initMatch) {
+      const sandboxId = initMatch[1];
 
       console.log({
-        message: "WS_URL endpoint called",
-        event: "wsurl:request",
+        message: "INIT endpoint called - initializing sandbox",
+        event: "init:request",
         sandboxId
       });
 
       const sandbox = getSandbox(env.Sandbox, sandboxId, { normalizeId: true });
 
       try {
-        // ALWAYS check processes - don't rely on in-memory state
+        // ALWAYS reinitialize to ensure config is up to date (kill old processes if they exist)
+        console.log({
+          message: "INITIALIZING sandbox - checking for old processes",
+          event: "init:start"
+        });
+
         const processes = await sandbox.listProcesses();
-        const viteProcess = processes.find(p => p.command?.includes('vite') || p.command?.includes('bun run dev'));
 
-        let needsInit = !viteProcess;
-
-        if (viteProcess) {
-          console.log({
-            message: "INIT: Vite already running, skipping init",
-            event: "init:skip",
-            processId: viteProcess.id,
-            command: viteProcess.command
-          });
-          initialized.add(sandboxId);
-        }
-
-        // Initialize Vite server only if needed
-        if (needsInit) {
-          console.log({
-            message: "INITIALIZING sandbox - checking for old processes",
-            event: "init:start"
-          });
-
-          // Kill any existing processes (from previous sessions/tests)
-          for (const process of processes) {
+        // Kill any existing processes (from previous sessions/tests)
+        for (const process of processes) {
             console.log({
               message: "INIT: Killing old process",
               event: "init:kill",
@@ -100,31 +83,31 @@ export default {
             }
           }
 
-          // Create promise to track when Vite is ready
-          viteReadyPromise = new Promise((resolve) => {
-            viteReadyResolve = resolve;
-          });
+        // Create promise to track when Vite is ready
+        viteReadyPromise = new Promise((resolve) => {
+          viteReadyResolve = resolve;
+        });
 
-          // Create a simple Vite dev server with WebSocket support
-          console.log({ message: "INIT: Creating package.json", event: "init:package" });
-          await sandbox.writeFile(
-            '/workspace/package.json',
-            JSON.stringify({
-              name: "vite-ws-test",
-              type: "module",
-              scripts: {
-                dev: "vite --host 0.0.0.0 --port 3333 --strictPort"
-              },
-              dependencies: {
-                "vite": "^5.0.0"
-              }
-            }, null, 2)
-          );
+        // Create a simple Vite dev server with log-based HMR
+        console.log({ message: "INIT: Creating package.json", event: "init:package" });
+        await sandbox.writeFile(
+          '/workspace/package.json',
+          JSON.stringify({
+            name: "vite-sandbox-app",
+            type: "module",
+            scripts: {
+              dev: "vite --host 0.0.0.0 --port 3333 --strictPort"
+            },
+            dependencies: {
+              "vite": "^5.0.0"
+            }
+          }, null, 2)
+        );
 
-          console.log({ message: "INIT: Creating index.html", event: "init:html" });
-          await sandbox.writeFile(
-            '/workspace/index.html',
-            `<!DOCTYPE html>
+        console.log({ message: "INIT: Creating index.html", event: "init:html" });
+        await sandbox.writeFile(
+          '/workspace/index.html',
+          `<!DOCTYPE html>
 <html>
 <head>
   <title>Vite in Cloudflare Sandbox</title>
@@ -138,12 +121,12 @@ export default {
   <script type="module" src="/main.js"></script>
 </body>
 </html>`
-          );
+        );
 
-          console.log({ message: "INIT: Creating vite.config.js", event: "init:vite-config" });
-          await sandbox.writeFile(
-            '/workspace/vite.config.js',
-            `export default {
+        console.log({ message: "INIT: Creating vite.config.js", event: "init:vite-config" });
+        await sandbox.writeFile(
+          '/workspace/vite.config.js',
+          `export default {
   base: '/sandbox/${sandboxId}/preview/',
   server: {
     host: '0.0.0.0',
@@ -156,108 +139,106 @@ export default {
       'appmi.store',    // Production domain
       '.appmi.store'    // Production wildcard subdomains
     ],
-    hmr: false  // Disable WebSocket HMR - use log-based auto-reload instead
+    hmr: false  // CRITICAL: Disable WebSocket HMR completely - use log-based auto-reload instead
   }
 }`
-          );
+        );
 
-          console.log({ message: "INIT: Creating main.js", event: "init:js" });
-          await sandbox.writeFile(
-            '/workspace/main.js',
-            `console.log('Hello from Vite!');
+        console.log({ message: "INIT: Creating main.js", event: "init:js" });
+        await sandbox.writeFile(
+          '/workspace/main.js',
+          `console.log('Hello from Vite!');
 document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!</p>';`
-          );
+        );
 
-          console.log({ message: "INIT: Installing dependencies with bun", event: "init:install" });
-          const installResult = await sandbox.exec('bun install', { cwd: '/workspace' });
-          console.log({
-            message: "INIT: Dependencies installed",
-            event: "init:install:complete",
-            stdout: installResult.stdout,
-            stderr: installResult.stderr
-          });
+        console.log({ message: "INIT: Installing dependencies with bun", event: "init:install" });
+        const installResult = await sandbox.exec('bun install', { cwd: '/workspace' });
+        console.log({
+          message: "INIT: Dependencies installed",
+          event: "init:install:complete",
+          stdout: installResult.stdout,
+          stderr: installResult.stderr
+        });
 
-          console.log({ message: "INIT: Starting Vite dev server process", event: "init:vite:start" });
-          const process = await sandbox.startProcess('bun run dev', {
-            cwd: '/workspace',
-            env: { NODE_ENV: 'development' }
-          });
+        console.log({ message: "INIT: Starting Vite dev server process", event: "init:vite:start" });
+        const process = await sandbox.startProcess('bun run dev', {
+          cwd: '/workspace',
+          env: { NODE_ENV: 'development' }
+        });
 
-          console.log({
-            message: "INIT: Vite process started",
-            event: "init:vite:spawned",
-            processId: process.id
-          });
+        console.log({
+          message: "INIT: Vite process started",
+          event: "init:vite:spawned",
+          processId: process.id
+        });
 
-          // Stream and log Vite output using parseSSEStream
-          const logStreamPromise = (async () => {
-            try {
-              const logStream = await sandbox.streamProcessLogs(process.id);
-              console.log({ message: "INIT: Got log stream", event: "init:logs:start" });
+        // Stream and log Vite output using parseSSEStream
+        const logStreamPromise = (async () => {
+          try {
+            const logStream = await sandbox.streamProcessLogs(process.id);
+            console.log({ message: "INIT: Got log stream", event: "init:logs:start" });
 
-              for await (const event of parseSSEStream<{ type?: string; data?: string }>(logStream)) {
-                const logLine = event.data?.trim();
+            for await (const event of parseSSEStream<{ type?: string; data?: string }>(logStream)) {
+              const logLine = event.data?.trim();
 
-                if (logLine) {
-                  // Store logs in memory
-                  processLogs.push(logLine);
+              if (logLine) {
+                // Store logs in memory
+                processLogs.push(logLine);
 
-                  console.log({
-                    message: "VITE_LOG",
-                    event: "vite:log",
-                    log: logLine
-                  });
+                console.log({
+                  message: "VITE_LOG",
+                  event: "vite:log",
+                  log: logLine
+                });
 
-                  // Check if Vite is ready by looking for specific log patterns
-                  if (viteReadyResolve && !initialized.has(sandboxId)) {
-                    // Vite prints "Local: http://..." or "ready in" when server is up
-                    if (logLine.includes('Local:') || logLine.includes('ready in') || logLine.includes('localhost:3333')) {
-                      console.log({
-                        message: "VITE_READY: Detected Vite ready signal in logs",
-                        event: "vite:ready",
-                        logLine
-                      });
-                      viteReadyResolve();
-                      viteReadyResolve = null;
-                    }
+                // Check if Vite is ready by looking for specific log patterns
+                if (viteReadyResolve) {
+                  // Vite prints "Local: http://..." or "ready in" when server is up
+                  if (logLine.includes('Local:') || logLine.includes('ready in') || logLine.includes('localhost:3333')) {
+                    console.log({
+                      message: "VITE_READY: Detected Vite ready signal in logs",
+                      event: "vite:ready",
+                      logLine
+                    });
+                    viteReadyResolve();
+                    viteReadyResolve = null;
                   }
                 }
               }
-            } catch (error) {
-              console.error({
-                message: "INIT: Log stream error",
-                event: "init:logs:error",
-                error: String(error)
-              });
             }
-          })();
+          } catch (error) {
+            console.error({
+              message: "INIT: Log stream error",
+              event: "init:logs:error",
+              error: String(error)
+            });
+          }
+        })();
 
-          ctx.waitUntil(logStreamPromise);
+        ctx.waitUntil(logStreamPromise);
 
-          // Wait for Vite to be ready (detected from logs)
-          console.log({ message: "INIT: Waiting for Vite ready signal from logs", event: "init:wait:start" });
+        // Wait for Vite to be ready (detected from logs)
+        console.log({ message: "INIT: Waiting for Vite ready signal from logs", event: "init:wait:start" });
 
-          const timeout = new Promise<void>((resolve) => {
-            setTimeout(() => {
-              console.warn({ message: "INIT: Timeout waiting for Vite (30s)", event: "init:wait:timeout" });
-              resolve();
-            }, 30000); // 30 second timeout
-          });
+        const timeout = new Promise<void>((resolve) => {
+          setTimeout(() => {
+            console.warn({ message: "INIT: Timeout waiting for Vite (30s)", event: "init:wait:timeout" });
+            resolve();
+          }, 30000); // 30 second timeout
+        });
 
-          // Wait for either Vite ready signal or timeout
-          await Promise.race([viteReadyPromise, timeout]);
+        // Wait for either Vite ready signal or timeout
+        await Promise.race([viteReadyPromise, timeout]);
 
-          initialized.add(sandboxId);
-          console.log({ message: "INIT: Complete", event: "init:complete" });
-        }
+        console.log({ message: "INIT: Complete", event: "init:complete" });
 
         // For local dev, return /sandbox/:sandboxId/preview/ URL (with trailing slash for Vite base)
         // In production with custom domain, would expose port and return preview URL
         const previewUrl = new URL(`/sandbox/${sandboxId}/preview/`, url.origin).toString();
 
         console.log({
-          message: "WS_URL: Returning to client",
-          event: "wsurl:response",
+          message: "INIT: Returning preview URL to client",
+          event: "init:response",
           previewUrl,
           sandboxId
         });
