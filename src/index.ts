@@ -1,4 +1,4 @@
-import { getSandbox, proxyToSandbox } from '@cloudflare/sandbox';
+import { getSandbox, proxyToSandbox, parseSSEStream } from '@cloudflare/sandbox';
 import type { DurableObjectNamespace } from '@cloudflare/workers-types';
 
 export { Sandbox } from '@cloudflare/sandbox';
@@ -47,7 +47,7 @@ export default {
         hostname
       });
 
-      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server');
+      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
 
       try {
         // Initialize Vite server on first request
@@ -125,16 +125,14 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
             processId: process.id
           });
 
-          // Stream and log Vite output
+          // Stream and log Vite output using parseSSEStream
           const logStreamPromise = (async () => {
             try {
               const logStream = await sandbox.streamProcessLogs(process.id);
               console.log({ message: "INIT: Got log stream", event: "init:logs:start" });
 
-              for await (const event of logStream) {
-                const decoder = new TextDecoder();
-                const text = decoder.decode(event);
-                const logLine = text.trim();
+              for await (const event of parseSSEStream<{ type?: string; data?: string }>(logStream)) {
+                const logLine = event.data?.trim();
 
                 if (logLine) {
                   // Store logs in memory
@@ -290,7 +288,7 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
 
     // Route: GET /direct - Direct link to preview (for debugging)
     if (url.pathname === '/direct') {
-      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server');
+      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
       const { hostname } = url;
 
       try {

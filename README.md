@@ -29,11 +29,11 @@ npm run dev
 This uses Vite with `@cloudflare/vite-plugin` to run the worker locally, which properly supports Durable Objects with custom containers.
 
 Then visit:
-- `http://localhost:5173/` - **Main page with iframe showing Vite preview**
-- `http://localhost:5173/ws-url` - Get the WebSocket URL JSON
-- `http://localhost:5173/direct` - Redirect directly to Vite preview (for debugging)
+- `http://localhost:5151/` - **Main page with iframe showing Vite preview**
+- `http://localhost:5151/ws-url` - Get the WebSocket URL JSON
+- `http://localhost:5151/direct` - Redirect directly to Vite preview (for debugging)
 
-Note: Vite dev server runs on port 5173 by default.
+Note: Vite dev server runs on port 5151 by default.
 
 ## Deploy
 
