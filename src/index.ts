@@ -129,11 +129,29 @@ export default {
 <head>
   <title>Vite WS Test</title>
   <script>
-    // Debug: Log all WebSocket connection attempts
+    // Intercept Vite WebSocket and redirect to our proxy
     const OriginalWebSocket = window.WebSocket;
     window.WebSocket = function(url, protocols) {
-      console.log('[WS DEBUG] Attempting WebSocket connection to:', url);
-      console.log('[WS DEBUG] Current page URL:', window.location.href);
+      const wsUrl = new URL(url, window.location.href);
+
+      console.log('[HMR PROXY] Original Vite WebSocket URL:', url);
+
+      // If this is a Vite HMR WebSocket (has token param), redirect to our proxy
+      if (wsUrl.searchParams.has('token') || wsUrl.pathname === '/' || url.includes('/@vite/client')) {
+        // Build the proxy WebSocket URL
+        const proxyUrl = new URL('/sandbox/${sandboxId}/hmr-ws', window.location.origin);
+        proxyUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+
+        // Copy query params from original Vite URL
+        wsUrl.searchParams.forEach((value, key) => {
+          proxyUrl.searchParams.set(key, value);
+        });
+
+        console.log('[HMR PROXY] Redirecting to proxy:', proxyUrl.toString());
+        return new OriginalWebSocket(proxyUrl.toString(), protocols);
+      }
+
+      console.log('[HMR PROXY] Not a Vite HMR socket, using original URL');
       return new OriginalWebSocket(url, protocols);
     };
     window.WebSocket.prototype = OriginalWebSocket.prototype;
@@ -169,12 +187,7 @@ export default {
       'container',      // Allow containerFetch requests
       'appmi.store',    // Production domain
       '.appmi.store'    // Production wildcard subdomains
-    ],
-    hmr: {
-      // Let Vite auto-detect the WebSocket URL from window.location
-      // This will work on any port (8787, 5151, etc.)
-      protocol: 'ws'
-    }
+    ]
   }
 }`
           );
@@ -398,6 +411,155 @@ if (app) {
           'Connection': 'keep-alive'
         }
       });
+    }
+
+    // Route: /sandbox/:sandboxId/hmr-ws - WebSocket proxy for Vite HMR
+    const hmrWsMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/hmr-ws$/);
+    if (hmrWsMatch && request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
+      const sandboxId = hmrWsMatch[1];
+
+      console.log({
+        message: "HMR_WS: WebSocket upgrade request received",
+        event: "hmr:ws:start",
+        sandboxId
+      });
+
+      const sandbox = getSandbox(env.Sandbox, sandboxId, { normalizeId: true });
+
+      // Create WebSocket pair for browser connection
+      const webSocketPair = new WebSocketPair();
+      const [client, server] = Object.values(webSocketPair);
+
+      // Accept the WebSocket connection from the browser
+      server.accept();
+
+      console.log({
+        message: "HMR_WS: Browser WebSocket accepted",
+        event: "hmr:ws:browser:accepted"
+      });
+
+      // Create a request to the Vite HMR WebSocket endpoint inside the container
+      const viteWsUrl = new URL(request.url);
+      viteWsUrl.protocol = 'ws:';
+      viteWsUrl.pathname = '/';  // Vite HMR WebSocket is at root with query params
+
+      console.log({
+        message: "HMR_WS: Connecting to container Vite WebSocket",
+        event: "hmr:ws:container:connect",
+        url: viteWsUrl.toString()
+      });
+
+      // Connect to the Vite server WebSocket inside the container
+      const containerWsRequest = new Request(viteWsUrl.toString(), {
+        headers: {
+          'Upgrade': 'websocket',
+          'Connection': 'Upgrade'
+        }
+      });
+
+      try {
+        const containerResponse = await sandbox.containerFetch(containerWsRequest, 3333);
+
+        if (containerResponse.status !== 101) {
+          console.error({
+            message: "HMR_WS: Failed to upgrade container WebSocket",
+            event: "hmr:ws:container:failed",
+            status: containerResponse.status
+          });
+          server.close(1011, "Failed to connect to Vite HMR");
+          return new Response("Failed to upgrade container WebSocket", { status: 500 });
+        }
+
+        const containerWs = containerResponse.webSocket;
+        if (!containerWs) {
+          console.error({
+            message: "HMR_WS: No WebSocket in container response",
+            event: "hmr:ws:container:no-websocket"
+          });
+          server.close(1011, "No WebSocket from container");
+          return new Response("No WebSocket from container", { status: 500 });
+        }
+
+        containerWs.accept();
+
+        console.log({
+          message: "HMR_WS: Container WebSocket connected, relaying messages",
+          event: "hmr:ws:relay:start"
+        });
+
+        // Relay messages: Browser → Container
+        server.addEventListener('message', (event) => {
+          console.log({
+            message: "HMR_WS: Browser → Container",
+            event: "hmr:ws:relay:to-container",
+            data: String(event.data).substring(0, 200)
+          });
+          containerWs.send(event.data);
+        });
+
+        // Relay messages: Container → Browser
+        containerWs.addEventListener('message', (event) => {
+          console.log({
+            message: "HMR_WS: Container → Browser",
+            event: "hmr:ws:relay:to-browser",
+            data: String(event.data).substring(0, 200)
+          });
+          server.send(event.data);
+        });
+
+        // Handle close events
+        server.addEventListener('close', (event) => {
+          console.log({
+            message: "HMR_WS: Browser WebSocket closed",
+            event: "hmr:ws:browser:close",
+            code: event.code,
+            reason: event.reason
+          });
+          containerWs.close(event.code, event.reason);
+        });
+
+        containerWs.addEventListener('close', (event) => {
+          console.log({
+            message: "HMR_WS: Container WebSocket closed",
+            event: "hmr:ws:container:close",
+            code: event.code,
+            reason: event.reason
+          });
+          server.close(event.code, event.reason);
+        });
+
+        // Handle errors
+        server.addEventListener('error', (event) => {
+          console.error({
+            message: "HMR_WS: Browser WebSocket error",
+            event: "hmr:ws:browser:error",
+            error: String(event)
+          });
+        });
+
+        containerWs.addEventListener('error', (event) => {
+          console.error({
+            message: "HMR_WS: Container WebSocket error",
+            event: "hmr:ws:container:error",
+            error: String(event)
+          });
+        });
+
+        // Return the WebSocket response to the browser
+        return new Response(null, {
+          status: 101,
+          webSocket: client
+        });
+      } catch (error) {
+        console.error({
+          message: "HMR_WS: Error setting up WebSocket proxy",
+          event: "hmr:ws:error",
+          error: String(error),
+          stack: (error as Error).stack
+        });
+        server.close(1011, "WebSocket proxy error");
+        return new Response("WebSocket proxy error: " + String(error), { status: 500 });
+      }
     }
 
     // Route: /sandbox/:sandboxId/preview/* - Proxy to sandbox Vite server
