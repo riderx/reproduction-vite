@@ -127,45 +127,13 @@ export default {
             `<!DOCTYPE html>
 <html>
 <head>
-  <title>Vite WS Test</title>
-  <script>
-    // Intercept Vite WebSocket and redirect to our proxy
-    const OriginalWebSocket = window.WebSocket;
-    window.WebSocket = function(url, protocols) {
-      const wsUrl = new URL(url, window.location.href);
-
-      console.log('[HMR PROXY] Original Vite WebSocket URL:', url);
-
-      // If this is a Vite HMR WebSocket (has token param), redirect to our proxy
-      if (wsUrl.searchParams.has('token') || wsUrl.pathname === '/' || url.includes('/@vite/client')) {
-        // Build the proxy WebSocket URL
-        const proxyUrl = new URL('/sandbox/${sandboxId}/hmr-ws', window.location.origin);
-        proxyUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-
-        // Copy query params from original Vite URL
-        wsUrl.searchParams.forEach((value, key) => {
-          proxyUrl.searchParams.set(key, value);
-        });
-
-        console.log('[HMR PROXY] Redirecting to proxy:', proxyUrl.toString());
-        return new OriginalWebSocket(proxyUrl.toString(), protocols);
-      }
-
-      console.log('[HMR PROXY] Not a Vite HMR socket, using original URL');
-      return new OriginalWebSocket(url, protocols);
-    };
-    window.WebSocket.prototype = OriginalWebSocket.prototype;
-    window.WebSocket.CONNECTING = OriginalWebSocket.CONNECTING;
-    window.WebSocket.OPEN = OriginalWebSocket.OPEN;
-    window.WebSocket.CLOSING = OriginalWebSocket.CLOSING;
-    window.WebSocket.CLOSED = OriginalWebSocket.CLOSED;
-  </script>
+  <title>Vite in Cloudflare Sandbox</title>
 </head>
 <body>
   <h1>Hello from Vite in Cloudflare Sandbox!</h1>
   <div id="app">
     <p>This is a minimal Vite server running in a Cloudflare Sandbox.</p>
-    <p>WebSocket HMR should work automatically.</p>
+    <p>HMR via log-based auto-reload is enabled.</p>
   </div>
   <script type="module" src="/main.js"></script>
 </body>
@@ -187,7 +155,8 @@ export default {
       'container',      // Allow containerFetch requests
       'appmi.store',    // Production domain
       '.appmi.store'    // Production wildcard subdomains
-    ]
+    ],
+    hmr: false  // Disable WebSocket HMR - use log-based auto-reload instead
   }
 }`
           );

@@ -192,7 +192,16 @@
                 const logData = JSON.parse(data);
                 const logType = logData.event?.includes('error') ? 'error' :
                                logData.event?.includes('warn') ? 'warn' : 'info';
-                addLog(logData.log || JSON.stringify(logData), logType);
+                const logText = logData.log || JSON.stringify(logData);
+                addLog(logText, logType);
+
+                // Auto-reload iframe when Vite detects file changes
+                if (logText.includes('[vite] page reload') || logText.includes('hmr update')) {
+                  addLog('🔄 Auto-reloading preview...', 'info');
+                  setTimeout(() => {
+                    iframe.contentWindow.location.reload();
+                  }, 100); // Small delay to let Vite finish processing
+                }
               } catch {
                 addLog(data);
               }
