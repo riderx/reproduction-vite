@@ -98,11 +98,11 @@
 </head>
 <body>
   <div class="header">
-    <h1>Vite Sandbox Preview</h1>
+    <h1>Vite Sandbox Preview (Dev Mode - No HMR)</h1>
     <div id="status">⏳ Initializing...</div>
     <div style="margin-top: 10px; display: flex; gap: 10px;">
-      <button id="test-hmr-btn" style="padding: 8px 16px; background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit;">
-        Test HMR (Click Count: 0)
+      <button id="update-file-btn" style="padding: 8px 16px; background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit;">
+        Update File (Count: 0)
       </button>
       <button id="reload-iframe-btn" style="padding: 8px 16px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit;">
         Reload Iframe
@@ -122,9 +122,9 @@
     const statusDiv = document.getElementById('status');
     const iframe = document.getElementById('preview-frame');
     const logsDiv = document.getElementById('logs');
-    const testBtn = document.getElementById('test-hmr-btn');
+    const updateBtn = document.getElementById('update-file-btn');
     const reloadBtn = document.getElementById('reload-iframe-btn');
-    let clickCount = 0;
+    let updateCount = 0;
 
     function addLog(message, type = 'info') {
       const entry = document.createElement('div');
@@ -134,23 +134,23 @@
       logsDiv.scrollTop = logsDiv.scrollHeight;
     }
 
-    const SANDBOX_ID = 'vite-hmr-' + Date.now();  // Fresh container each reload (for testing)
+    const SANDBOX_ID = 'vite-dev-' + Date.now();  // Fresh container each reload
 
-    async function testHMR() {
-      clickCount++;
-      testBtn.textContent = `Test HMR (Click Count: ${clickCount})`;
-      addLog(`Testing HMR... updating main.js with count: ${clickCount}`, 'info');
+    async function updateFile() {
+      updateCount++;
+      updateBtn.textContent = `Update File (Count: ${updateCount})`;
+      addLog(`Updating main.js with count: ${updateCount}`, 'info');
 
       try {
-        const response = await fetch(`/sandbox/${SANDBOX_ID}/test-hmr`, {
+        const response = await fetch(`/sandbox/${SANDBOX_ID}/update-file`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ count: clickCount })
+          body: JSON.stringify({ count: updateCount })
         });
 
         const result = await response.json();
         if (result.success) {
-          addLog(`✅ File updated! HMR should reload the iframe now.`, 'info');
+          addLog(`✅ File updated! Click "Reload Iframe" to see changes.`, 'info');
         } else {
           addLog(`❌ Failed to update file: ${result.error}`, 'error');
         }
@@ -159,7 +159,7 @@
       }
     }
 
-    testBtn.addEventListener('click', testHMR);
+    updateBtn.addEventListener('click', updateFile);
 
     function reloadIframe() {
       addLog('Manually reloading iframe...', 'info');
@@ -195,12 +195,12 @@
                 const logText = logData.log || JSON.stringify(logData);
                 addLog(logText, logType);
 
-                // Auto-reload iframe when Vite detects file changes
-                if (logText.includes('[vite] page reload') || logText.includes('hmr update')) {
-                  addLog('🔄 Auto-reloading preview...', 'info');
+                // Auto-reload iframe when Vite finishes rebuilding
+                if (logText.includes('hmr update') || logText.includes('page reload')) {
+                  addLog('🔄 Auto-reloading iframe...', 'info');
                   setTimeout(() => {
                     iframe.contentWindow.location.reload();
-                  }, 100); // Small delay to let Vite finish processing
+                  }, 100);
                 }
               } catch {
                 addLog(data);

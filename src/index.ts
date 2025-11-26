@@ -99,7 +99,7 @@ export default {
               dev: "vite --host 0.0.0.0 --port 3333 --strictPort"
             },
             dependencies: {
-              "vite": "^5.0.0"
+              "vite": "^7.2.2"
             }
           }, null, 2)
         );
@@ -132,15 +132,29 @@ export default {
     host: '0.0.0.0',
     port: 3333,
     strictPort: true,
+    hmr: false,  // CRITICAL: Disable WebSocket HMR client injection
     allowedHosts: [
       'localhost',
       '.localhost',
       'container',      // Allow containerFetch requests
       'appmi.store',    // Production domain
       '.appmi.store'    // Production wildcard subdomains
-    ],
-    hmr: false  // CRITICAL: Disable WebSocket HMR completely - use log-based auto-reload instead
-  }
+    ]
+  },
+  // Plugin to block @vite/client requests completely
+  plugins: [{
+    name: 'block-vite-client',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.url && req.url.includes('@vite/client')) {
+          res.statusCode = 404;
+          res.end();
+          return;
+        }
+        next();
+      });
+    }
+  }]
 }`
         );
 
@@ -266,11 +280,11 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
       return env.ASSETS.fetch(request);
     }
 
-    // Route: POST /sandbox/:sandboxId/test-hmr - Update main.js to test HMR
-    const testHmrMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/test-hmr$/);
-    if (testHmrMatch && request.method === 'POST') {
-      const sandboxId = testHmrMatch[1];
-      console.log({ message: "TEST_HMR: Updating main.js", event: "test:hmr:start", sandboxId });
+    // Route: POST /sandbox/:sandboxId/update-file - Update a file to test rebuild
+    const updateFileMatch = url.pathname.match(/^\/sandbox\/([^/]+)\/update-file$/);
+    if (updateFileMatch && request.method === 'POST') {
+      const sandboxId = updateFileMatch[1];
+      console.log({ message: "UPDATE_FILE: Updating main.js", event: "update:start", sandboxId });
 
       const sandbox = getSandbox(env.Sandbox, sandboxId, { normalizeId: true });
 
@@ -282,24 +296,24 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
         const newMainJs = `console.log('Hello from Vite! Count: ${count}');
 const app = document.getElementById('app');
 if (app) {
-  app.innerHTML += '<p>JavaScript loaded successfully! Click count: <strong>${count}</strong></p>';
+  app.innerHTML += '<p>JavaScript loaded successfully! Update count: <strong>${count}</strong></p>';
 }`;
 
         await sandbox.writeFile('/workspace/main.js', newMainJs);
 
         console.log({
-          message: "TEST_HMR: File updated",
-          event: "test:hmr:success",
+          message: "UPDATE_FILE: File updated",
+          event: "update:success",
           count
         });
 
         return Response.json({
           success: true,
           count,
-          message: 'main.js updated, HMR should trigger'
+          message: 'main.js updated - manually reload iframe to see changes'
         });
       } catch (error) {
-        console.error({ message: "TEST_HMR: Error", error: String(error) });
+        console.error({ message: "UPDATE_FILE: Error", error: String(error) });
         return Response.json({
           success: false,
           error: String(error)
