@@ -439,18 +439,20 @@ if (app) {
       });
 
       // Create a request to the Vite HMR WebSocket endpoint inside the container
-      const viteWsUrl = new URL(request.url);
-      viteWsUrl.protocol = 'ws:';
-      viteWsUrl.pathname = '/';  // Vite HMR WebSocket is at root with query params
+      // containerFetch expects a path relative to the container, not a full URL
+      const originalUrl = new URL(request.url);
+      const viteWsPath = '/?' + originalUrl.searchParams.toString();  // Vite HMR WebSocket is at root with query params
 
       console.log({
         message: "HMR_WS: Connecting to container Vite WebSocket",
         event: "hmr:ws:container:connect",
-        url: viteWsUrl.toString()
+        path: viteWsPath,
+        queryParams: Object.fromEntries(originalUrl.searchParams)
       });
 
-      // Connect to the Vite server WebSocket inside the container
-      const containerWsRequest = new Request(viteWsUrl.toString(), {
+      // Build request for container - use http:// with container hostname
+      // containerFetch will handle the routing internally
+      const containerWsRequest = new Request('http://container:3333' + viteWsPath, {
         headers: {
           'Upgrade': 'websocket',
           'Connection': 'Upgrade'
