@@ -98,7 +98,7 @@
 </head>
 <body>
   <div class="header">
-    <h1>Vite Sandbox Preview (Dev Mode - No HMR)</h1>
+    <h1>Vite Sandbox Preview (Dev Mode - Log-Based Auto-Reload)</h1>
     <div id="status">⏳ Initializing...</div>
     <div style="margin-top: 10px; display: flex; gap: 10px;">
       <button id="update-file-btn" style="padding: 8px 16px; background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit;">
@@ -150,7 +150,7 @@
 
         const result = await response.json();
         if (result.success) {
-          addLog(`✅ File updated! Click "Reload Iframe" to see changes.`, 'info');
+          addLog(`✅ File updated! Watching for rebuild completion...`, 'info');
         } else {
           addLog(`❌ Failed to update file: ${result.error}`, 'error');
         }
@@ -196,11 +196,14 @@
                 addLog(logText, logType);
 
                 // Auto-reload iframe when Vite finishes rebuilding
-                if (logText.includes('hmr update') || logText.includes('page reload')) {
-                  addLog('🔄 Auto-reloading iframe...', 'info');
+                // With HMR enabled server-side, Vite logs proper rebuild messages
+                if (logText.includes('hmr update') ||
+                    logText.includes('page reload') ||
+                    logText.includes('[vite] hot updated')) {
+                  addLog('🔄 Auto-reloading iframe after Vite rebuild...', 'info');
                   setTimeout(() => {
                     iframe.contentWindow.location.reload();
-                  }, 100);
+                  }, 300);  // Small delay to ensure build is complete
                 }
               } catch {
                 addLog(data);

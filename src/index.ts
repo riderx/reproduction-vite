@@ -132,7 +132,11 @@ export default {
     host: '0.0.0.0',
     port: 3333,
     strictPort: true,
-    hmr: false,  // CRITICAL: Disable WebSocket HMR client injection
+    hmr: {
+      // Keep HMR enabled server-side so we get proper rebuild logs
+      // Configure overlay to be disabled to prevent error popups
+      overlay: false
+    },
     allowedHosts: [
       'localhost',
       '.localhost',
@@ -141,18 +145,12 @@ export default {
       '.appmi.store'    // Production wildcard subdomains
     ]
   },
-  // Plugin to block @vite/client requests completely
+  // Plugin to intercept and block @vite/client injection
   plugins: [{
-    name: 'block-vite-client',
-    configureServer(server) {
-      server.middlewares.use((req, res, next) => {
-        if (req.url && req.url.includes('@vite/client')) {
-          res.statusCode = 404;
-          res.end();
-          return;
-        }
-        next();
-      });
+    name: 'remove-hmr-client',
+    transformIndexHtml(html) {
+      // Remove the HMR client script injection from HTML
+      return html.replace(/<script[^>]*@vite\\/client[^>]*><\\/script>/g, '');
     }
   }]
 }`

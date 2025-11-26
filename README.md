@@ -21,15 +21,16 @@ This project demonstrates Vite Hot Module Replacement (HMR) integration with Clo
 
 ## Implementation Notes
 
-### Log-Based Auto-Reload
+### Log-Based Auto-Reload (No WebSocket)
 
 Instead of using Vite's WebSocket-based HMR, this project uses a log-based auto-reload approach:
 
-1. Vite HMR is disabled via `server.hmr: false` in the config
-2. Client connects to `/sandbox/:sandboxId/logs-stream` via Server-Sent Events (SSE)
-3. When Vite detects file changes, it logs `[vite] page reload`
-4. Client watches the log stream and triggers `iframe.contentWindow.location.reload()` automatically
-5. This provides automatic updates without WebSocket complexity
+1. Vite HMR is **enabled server-side** to produce proper rebuild logs
+2. HMR client is configured to connect to invalid WebSocket endpoint (`invalid.local:9999`)
+3. Client connects to `/sandbox/:sandboxId/logs-stream` via Server-Sent Events (SSE)
+4. When Vite detects file changes and rebuilds, it logs `[vite] hmr update` or `[vite] page reload`
+5. Client watches the log stream and triggers `iframe.contentWindow.location.reload()` automatically
+6. This provides automatic updates without WebSocket connections or errors
 
 ## Project Structure
 
@@ -67,7 +68,8 @@ Initialize sandbox and return preview URL:
 Proxy all requests to Vite server inside container:
 - HTTP requests → `containerFetch(request, 3333)`
 - Vite base path configured to match route
-- HMR disabled - uses log-based auto-reload instead
+- HMR enabled server-side but client connects to invalid WebSocket
+- Auto-reload triggered by watching log stream
 
 ### `/sandbox/:sandboxId/logs-stream`
 Server-Sent Events stream of Vite server output
@@ -101,7 +103,14 @@ Each sandbox initializes with:
        port: 3333,
        strictPort: true,
        allowedHosts: ['localhost', '.localhost', 'container', 'appmi.store', '.appmi.store'],
-       hmr: false  // Disabled - uses log-based auto-reload instead
+       hmr: {
+         // HMR enabled server-side for proper rebuild logs
+         // Client configured to fail silently without WebSocket errors
+         protocol: 'ws',
+         host: 'invalid.local',
+         port: 9999,
+         clientPort: 9999
+       }
      }
    }
    ```
