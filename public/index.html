@@ -100,6 +100,14 @@
   <div class="header">
     <h1>Vite Sandbox Preview</h1>
     <div id="status">⏳ Initializing...</div>
+    <div style="margin-top: 10px; display: flex; gap: 10px;">
+      <button id="test-hmr-btn" style="padding: 8px 16px; background: #007acc; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit;">
+        Test HMR (Click Count: 0)
+      </button>
+      <button id="reload-iframe-btn" style="padding: 8px 16px; background: #4caf50; color: white; border: none; border-radius: 4px; cursor: pointer; font-family: inherit;">
+        Reload Iframe
+      </button>
+    </div>
   </div>
 
   <div class="container">
@@ -114,6 +122,9 @@
     const statusDiv = document.getElementById('status');
     const iframe = document.getElementById('preview-frame');
     const logsDiv = document.getElementById('logs');
+    const testBtn = document.getElementById('test-hmr-btn');
+    const reloadBtn = document.getElementById('reload-iframe-btn');
+    let clickCount = 0;
 
     function addLog(message, type = 'info') {
       const entry = document.createElement('div');
@@ -122,6 +133,38 @@
       logsDiv.appendChild(entry);
       logsDiv.scrollTop = logsDiv.scrollHeight;
     }
+
+    async function testHMR() {
+      clickCount++;
+      testBtn.textContent = `Test HMR (Click Count: ${clickCount})`;
+      addLog(`Testing HMR... updating main.js with count: ${clickCount}`, 'info');
+
+      try {
+        const response = await fetch('/test-hmr', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ count: clickCount })
+        });
+
+        const result = await response.json();
+        if (result.success) {
+          addLog(`✅ File updated! HMR should reload the iframe now.`, 'info');
+        } else {
+          addLog(`❌ Failed to update file: ${result.error}`, 'error');
+        }
+      } catch (error) {
+        addLog(`❌ Error: ${error.message}`, 'error');
+      }
+    }
+
+    testBtn.addEventListener('click', testHMR);
+
+    function reloadIframe() {
+      addLog('Manually reloading iframe...', 'info');
+      iframe.contentWindow.location.reload();
+    }
+
+    reloadBtn.addEventListener('click', reloadIframe);
 
     async function streamLogs() {
       try {

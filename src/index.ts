@@ -50,8 +50,28 @@ export default {
       const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
 
       try {
-        // Initialize Vite server on first request
-        if (!initialized.has('vite-echo-server')) {
+        // Check if Vite process is already running in the Durable Object
+        let needsInit = !initialized.has('vite-echo-server');
+
+        if (needsInit) {
+          // Double-check: list processes to see if Vite is already running
+          const processes = await sandbox.listProcesses();
+          const viteProcess = processes.find(p => p.command?.includes('vite') || p.command?.includes('bun run dev'));
+
+          if (viteProcess) {
+            console.log({
+              message: "INIT: Vite already running from previous session",
+              event: "init:skip",
+              processId: viteProcess.id,
+              command: viteProcess.command
+            });
+            needsInit = false;
+            initialized.add('vite-echo-server');
+          }
+        }
+
+        // Initialize Vite server only if needed
+        if (needsInit) {
           console.log({
             message: "INITIALIZING sandbox for first time",
             event: "init:start"
@@ -187,30 +207,70 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
           console.log({ message: "INIT: Complete", event: "init:complete" });
         }
 
-        // Expose port and get preview URL
-        console.log({ message: "EXPOSE: Exposing port 3333", event: "expose:start", hostname });
-        const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
-        const exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
+        // Expose port and get preview URL (check if already exposed first)
+        console.log({ message: "EXPOSE: Getting or exposing port 3333", event: "expose:start", hostname });
+
+        let exposedAt: string;
+
+        // Check if port is already exposed
+        if (typeof sandbox.getExposedPorts === 'function') {
+          try {
+            const exposedPorts = await sandbox.getExposedPorts(hostname);
+            const existing = exposedPorts.find((p: any) => p.port === 3333);
+
+            if (existing) {
+              exposedAt = existing.url || (existing as any).exposedAt;
+              console.log({
+                message: "EXPOSE: Port already exposed, reusing",
+                event: "expose:reuse",
+                exposedAt
+              });
+            } else {
+              const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
+              exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
+              console.log({
+                message: "EXPOSE: Port newly exposed",
+                event: "expose:new",
+                exposedAt
+              });
+            }
+          } catch (error) {
+            // Fallback if getExposedPorts fails
+            console.warn({ message: "EXPOSE: getExposedPorts failed, trying exposePort", error: String(error) });
+            const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
+            exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
+          }
+        } else {
+          // Fallback if getExposedPorts doesn't exist
+          const exposeResult = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
+          exposedAt = exposeResult.url || (exposeResult as any).exposedAt;
+        }
+
         console.log({
-          message: "EXPOSE: Port exposed",
+          message: "EXPOSE: Final preview URL",
           event: "expose:success",
-          exposedAt,
-          exposeResult
+          exposedAt
         });
 
         // Convert https to wss for WebSocket
         const wsUrl = exposedAt.replace('https://', 'wss://').replace('http://', 'ws://');
 
+        // In local dev, the exposedAt URL (e.g., http://3333-vite-echo-server-xxx.localhost/)
+        // won't work directly in browsers. Instead, use the /direct route which proxies through the worker.
+        const proxiedPreviewUrl = new URL('/direct', url.origin).toString();
+
         console.log({
           message: "WS_URL: Returning to client",
           event: "wsurl:response",
-          httpsUrl: exposedAt,
+          rawExposedAt: exposedAt,
+          proxiedPreviewUrl,
           wsUrl
         });
 
         return Response.json({
           url: wsUrl,
-          previewUrl: exposedAt,
+          previewUrl: proxiedPreviewUrl, // Return proxied URL instead of raw exposedAt
+          rawPreviewUrl: exposedAt, // Include raw URL for debugging
           message: 'Connect to this WebSocket URL for Vite HMR'
         });
       } catch (error) {
@@ -230,6 +290,45 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
     if (url.pathname === '/' || url.pathname === '/index.html') {
       console.log({ message: "ROOT: Serving static index.html from assets", event: "root:request" });
       return env.ASSETS.fetch(request);
+    }
+
+    // Route: POST /test-hmr - Update main.js to test HMR
+    if (url.pathname === '/test-hmr' && request.method === 'POST') {
+      console.log({ message: "TEST_HMR: Updating main.js", event: "test:hmr:start" });
+
+      const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
+
+      try {
+        const body = await request.json() as { count: number };
+        const count = body.count || 0;
+
+        // Update main.js with new counter value
+        const newMainJs = `console.log('Hello from Vite! Count: ${count}');
+const app = document.getElementById('app');
+if (app) {
+  app.innerHTML += '<p>JavaScript loaded successfully! Click count: <strong>${count}</strong></p>';
+}`;
+
+        await sandbox.writeFile('/workspace/main.js', newMainJs);
+
+        console.log({
+          message: "TEST_HMR: File updated",
+          event: "test:hmr:success",
+          count
+        });
+
+        return Response.json({
+          success: true,
+          count,
+          message: 'main.js updated, HMR should trigger'
+        });
+      } catch (error) {
+        console.error({ message: "TEST_HMR: Error", error: String(error) });
+        return Response.json({
+          success: false,
+          error: String(error)
+        }, { status: 500 });
+      }
     }
 
     // Route: GET /logs-stream - Stream Vite server logs via SSE
@@ -286,17 +385,61 @@ document.getElementById('app').innerHTML += '<p>JavaScript loaded successfully!<
       });
     }
 
-    // Route: GET /direct - Direct link to preview (for debugging)
-    if (url.pathname === '/direct') {
+    // Route: GET /direct - Proxy requests to Vite preview
+    if (url.pathname.startsWith('/direct')) {
       const sandbox = getSandbox(env.Sandbox, 'vite-echo-server', { normalizeId: true });
       const { hostname } = url;
 
       try {
-        const result = await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
-        const previewUrl = result.url || (result as any).exposedAt;
-        console.log({ message: "DIRECT: Redirecting to preview", event: "direct:redirect", previewUrl, result });
-        return Response.redirect(previewUrl, 302);
+        // Ensure port is exposed
+        if (typeof sandbox.getExposedPorts === 'function') {
+          const exposedPorts = await sandbox.getExposedPorts(hostname);
+          const existing = exposedPorts.find((p: any) => p.port === 3333);
+
+          if (!existing) {
+            await sandbox.exposePort(3333, { hostname, name: 'vite-preview' });
+            console.log({ message: "DIRECT: Port exposed", event: "direct:expose" });
+          }
+        }
+
+        // Create a synthetic request to the .localhost URL for proxyToSandbox to handle
+        const exposedPorts = await sandbox.getExposedPorts(hostname);
+        const exposedPort = exposedPorts.find((p: any) => p.port === 3333);
+
+        if (!exposedPort) {
+          return new Response('Port not exposed', { status: 500 });
+        }
+
+        const previewUrl = exposedPort.url || (exposedPort as any).exposedAt;
+
+        // Create a new request with the .localhost URL
+        const proxyUrl = new URL(previewUrl);
+        proxyUrl.pathname = url.pathname.replace('/direct', '') || '/';
+        proxyUrl.search = url.search;
+
+        const proxyRequest = new Request(proxyUrl.toString(), {
+          method: request.method,
+          headers: request.headers,
+          body: request.body,
+        });
+
+        console.log({
+          message: "DIRECT: Proxying request",
+          event: "direct:proxy",
+          originalUrl: url.toString(),
+          proxyUrl: proxyUrl.toString()
+        });
+
+        // Let proxyToSandbox handle the actual proxying
+        const proxyResponse = await proxyToSandbox(proxyRequest, env);
+
+        if (proxyResponse) {
+          return proxyResponse;
+        }
+
+        return new Response('Proxy failed', { status: 500 });
       } catch (error) {
+        console.error({ message: "DIRECT: Error", error: String(error) });
         return Response.json({ error: String(error) }, { status: 500 });
       }
     }
