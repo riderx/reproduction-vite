@@ -9,13 +9,13 @@
     "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
-    "@cloudflare/sandbox": "^0.5.4"
+    "@cloudflare/sandbox": "^0.6.0"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.14.0",
     "@cloudflare/workers-types": "^4.20241127.0",
     "typescript": "^5.4.3",
     "vite": "^7.2.2",
-    "wrangler": "^4.50.0"
+    "wrangler": "^4.51.0"
   }
 }
