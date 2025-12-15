@@ -37,7 +37,7 @@ export default {
     }
 
     const url = new URL(request.url);
-    const { hostname } = url;
+    const hostname = url.host;
 
     // Route: GET /ws-url - Return WebSocket URL for client to connect
     if (url.pathname === '/ws-url') {
